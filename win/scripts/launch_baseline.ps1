@@ -4,8 +4,8 @@
 param(
     [string]$ModelPath = "D:\opt\models\lmstudio\lmstudio-community\Qwen3-Coder-30B-A3B-Instruct-GGUF\Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
     [int]$GpuLayers = 41,
-    [int]$ContextSize = 8192,
-    [int]$Port = 8080
+    [int]$ContextSize = 32768,
+    [int]$Port = 8081
 )
 
 $LlamaDir = "C:\opt\llama-hip-amd721\llama-b8407-windows-rocm-7.2.1-gfx110X-gfx115X-gfx120X-x64"
