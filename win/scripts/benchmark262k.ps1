@@ -207,6 +207,10 @@ function Invoke-Bench {
     $out = & $LlamaBench @benchArgs 2>&1
     $peakVRAM = Stop-VRAMPoller $pollerJob
 
+    # Print bench table to console (pipe-delimited rows only — skip build/device lines)
+    $out | Where-Object { $_ -match '^\|' } | ForEach-Object { Write-Host $_ -ForegroundColor White }
+    if ($null -ne $peakVRAM) { Write-Host "    Peak VRAM: $peakVRAM GB" -ForegroundColor Green }
+
     $metaLines = @()
     if ($null -ne $peakVRAM) { $metaLines += "### **Peak VRAM (measured):** $peakVRAM GB" }
     $metaLines += "### **Context:** $totalCtx tokens (pp+n)  |  **KV ($KVType):** $kvGB GB  |  **Est. VRAM:** $estVRAM GB"
