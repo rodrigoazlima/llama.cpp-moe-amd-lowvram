@@ -54,7 +54,7 @@ $LadderStats = [System.Collections.Generic.List[hashtable]]::new()
 $FIXED_CTX     = 262144   # Qwen3 model max context — target for all tests
 $MODEL_VRAM_GB = 16.25    # measured GPU baseline (model weights, no context)
 $VRAM_TOTAL_GB = 24.0     # RX 7900 XTX
-$VRAM_GUARD_GB = 22.0     # warn + need -Force above this
+$VRAM_GUARD_GB = 23.25     # warn + need -Force above this
 $VRAM_BLOCK_GB = 23.8     # always blocked — likely OOM
 
 # KV cache: 2(K+V) x 8_kvheads x 128_headdim x 28_layers = 57344 elements/token
