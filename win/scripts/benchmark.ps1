@@ -135,8 +135,8 @@ function Run-Bench {
     $peakVRAM = Stop-VRAMPoller $pollerJob
 
     $metaLines = @()
-    if ($peakVRAM -ne $null) { $metaLines += "> **Peak VRAM (measured):** $peakVRAM GB" }
-    if ($KVNote)              { $metaLines += "> **Est. KV cache:** $KVNote" }
+    if ($peakVRAM -ne $null) { $metaLines += "### **Peak VRAM (measured):** $peakVRAM GB" }
+    if ($KVNote)              { $metaLines += "### **Est. KV cache:** $KVNote" }
 
     return @{ Out = $out; Meta = $metaLines }
 }

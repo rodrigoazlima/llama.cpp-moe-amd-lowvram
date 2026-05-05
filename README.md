@@ -133,7 +133,7 @@ System: VRAM 24 GB | RAM 128 GB DDR5 | CPU Ryzen 9 9900X
 | maxvram (GPU full, f16 KV, no-mmap, FA, pp=32K) | — | — | ~20.9 GB | 32K tok | Exercises 6.5 GB VRAM headroom |
 | Optimized (MoE CPU offload, q4_0 KV, no-mmap, FA) | 843 | 27.7 | ~17.4 GB | 640 tok | **Low-VRAM only** |
 
-> **Note:** `no-mmap` + `q4_0/q8_0` KV consistently outperforms mmap baseline — skip mmap on 24GB.
+### **Note:** `no-mmap` + `q4_0/q8_0` KV consistently outperforms mmap baseline — skip mmap on 24GB.
 > MoE CPU offload hurts on 24GB. Use `launch_baseline.ps1` for speed, `launch_highctx.ps1` for 128K+ context.
 > `—` rows = new configs, run `.\win\scripts\benchmark.ps1 -Config largectx` or `-Config maxvram` to populate.
 

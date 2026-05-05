@@ -5,14 +5,14 @@ param(
     [string]$ModelPath = "D:\opt\models\lmstudio\lmstudio-community\Qwen3-Coder-30B-A3B-Instruct-GGUF\Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
     [int]$GpuLayers = 41,
     [int]$CpuMoe = 35,
-    [int]$ContextSize = 32768,
+    [int]$ContextSize = 262144,
     [int]$Port = 8081
 )
 
 $LlamaDir = "C:\opt\llama-hip-amd721\llama-b8407-windows-rocm-7.2.1-gfx110X-gfx115X-gfx120X-x64"
 $LlamaServer = "$LlamaDir\llama-server.exe"
 
-# Add llama dir to PATH so bundled ROCm 7.2.1 DLLs load (not the old ROCm 6.4)
+# Add llama dir to PATH so bundled ROCm 7.2.1 DLLs load
 $env:PATH = "$LlamaDir;" + $env:PATH
 $env:HSA_ENABLE_SDMA = "0"   # Reduces DMA overhead on RDNA3, +5-15% throughput
 
@@ -35,8 +35,8 @@ Write-Host ""
     -m $ModelPath `
     --n-gpu-layers $GpuLayers `
     --n-cpu-moe $CpuMoe `
-    --cache-type-k q4_0 `
-    --cache-type-v q4_0 `
+    --cache-type-k f16 `
+    --cache-type-v f16 `
     --no-mmap `
     --mlock `
     -c $ContextSize `
