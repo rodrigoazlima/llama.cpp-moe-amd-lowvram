@@ -3,22 +3,23 @@
 # Target hardware: RX 7900 XTX 24GB | Ryzen 9 9900X | 128GB DDR5 | ROCm 7.2.1
 # Model: Qwen3-Coder-30B-A3B Q4_K_M (17.35 GiB, ~16.25 GB measured VRAM)
 #
-# DESIGN RULE: every test uses -c 262144 (full KV cache pre-allocated).
-# This matches production: server configured for max context, VRAM cost is fixed.
+# DESIGN RULE: all tests target the 262144 token context window.
+# llama-bench b2500 has no -c flag — context = pp + n only.
+# Each test therefore uses pp + n that fills toward 262144:
+#   ladder  — pp varies 8K→262K, n kept small (128 or 32). context = pp+n.
+#   stress  — pp=262016 + n=128 = 262144 exactly. true full 262K context.
+# VRAM scales with pp+n per test (KV cache not pre-allocated beyond what's needed).
 #
-# VRAM at 262144 ctx (KV cache formula: 57344 elements/token):
-#   q4_0 KV @ 262144: 7.00 GB + 16.25 GB model = ~23.25 GB  <- only viable type
-#   q8_0 KV @ 262144: 14.00 GB + 16.25 GB = ~30.25 GB       <- OOM
-#   f16  KV @ 262144: 28.00 GB + 16.25 GB = ~44.25 GB       <- OOM
+# VRAM formula: model(16.25 GB) + KV(57344 elem/tok × bpe × ctx_tokens / 1GB)
+#   q4_0 KV: 0.5 bytes/elem — fits 262K ctx at ~23.25 GB total
+#   q8_0 KV: 1 byte/elem    — fits ~128K ctx at ~23.25 GB total
+#   f16  KV: 2 bytes/elem   — fits ~32K ctx at ~19.75 GB total
 #
 # Sections:
-#   ladder  — pp t/s vs prompt size (8K→262K), same VRAM throughout
-#   ubatch  — micro-batch sweep at pp=8K/32K/128K (where ubatch dominates)
-#   stress  — pp=262016 + n=32 (true max-context run, ~45 min)
+#   ladder  — pp t/s vs prompt size (8K→262K), q4_0 KV
+#   ubatch  — micro-batch sweep at pp=8K/32K/128K (where it dominates)
+#   stress  — pp=262016 + n=128 = 262144 exact (full 262K, ~45 min)
 #   all     — all sections
-#
-# NOTE: -c flag requires llama-bench b2500+. If bench prints help and exits,
-#       try replacing "-c" with "--ctx-size" in the $BASE_ARGS line below.
 #
 # Usage:
 #   .\benchmark262k.ps1                       # ladder (default, ~30 min)
@@ -50,23 +51,23 @@ $OutFile     = "$PSScriptRoot\benchmark262k_$Timestamp.md"
 $LadderStats = [System.Collections.Generic.List[hashtable]]::new()
 
 # --- Constants ---
-$FIXED_CTX      = 262144   # context window for ALL tests — never changes
-$MODEL_VRAM_GB  = 16.25    # measured GPU baseline (model weights, no context)
-$VRAM_TOTAL_GB  = 24.0     # RX 7900 XTX
-$VRAM_GUARD_GB  = 23.0     # warn + need -Force above this
-$VRAM_BLOCK_GB  = 24.0     # always blocked — hardware limit
+$FIXED_CTX     = 262144   # Qwen3 model max context — target for all tests
+$MODEL_VRAM_GB = 16.25    # measured GPU baseline (model weights, no context)
+$VRAM_TOTAL_GB = 24.0     # RX 7900 XTX
+$VRAM_GUARD_GB = 22.0     # warn + need -Force above this
+$VRAM_BLOCK_GB = 23.8     # always blocked — likely OOM
 
 # KV cache: 2(K+V) x 8_kvheads x 128_headdim x 28_layers = 57344 elements/token
+# Context = pp + n (b2500 has no -c flag)
 function Get-KVCacheSizeGB {
-    param([string]$KVType = "q4_0")
+    param([int]$Tokens, [string]$KVType = "q4_0")
     $bpe = switch ($KVType) { "f16" { 2.0 } "q8_0" { 1.0 } "q4_0" { 0.5 } default { 2.0 } }
-    return [math]::Round(57344 * $bpe * $FIXED_CTX / 1GB, 2)
+    return [math]::Round(57344 * $bpe * $Tokens / 1GB, 2)
 }
 
-# All tests: VRAM = model + KV(262144 tokens, q4_0 only)
 function Get-EstVRAMGB {
-    param([string]$KVType = "q4_0")
-    return [math]::Round($MODEL_VRAM_GB + (Get-KVCacheSizeGB $KVType), 2)
+    param([int]$Tokens, [string]$KVType = "q4_0")
+    return [math]::Round($MODEL_VRAM_GB + (Get-KVCacheSizeGB $Tokens $KVType), 2)
 }
 
 function Get-EstRuntime {
@@ -85,10 +86,10 @@ function Get-EstRuntime {
 }
 
 function Test-VRAMFeasible {
-    param([string]$Label, [string]$KVType = "q4_0")
-    $est = Get-EstVRAMGB $KVType
+    param([string]$Label, [int]$Tokens, [string]$KVType = "q4_0")
+    $est = Get-EstVRAMGB $Tokens $KVType
     if ($est -ge $VRAM_BLOCK_GB) {
-        Write-Warning "BLOCKED [${Label}]: est. $est GB >= $VRAM_BLOCK_GB GB (OOM). KV type $KVType not viable at $FIXED_CTX ctx."
+        Write-Warning "BLOCKED [${Label}]: est. $est GB >= $VRAM_BLOCK_GB GB hard limit."
         return $false
     }
     if ($est -ge $VRAM_GUARD_GB -and -not $Force) {
@@ -165,7 +166,7 @@ function Stop-VRAMPoller {
 # --- Bench runner ---
 # All calls add -c $FIXED_CTX so KV cache is always 262144 tokens regardless of pp/n.
 
-function Run-Bench {
+function Invoke-Bench {
     param(
         [string]$Label,
         [string[]]$ExtraArgs,
@@ -183,22 +184,22 @@ function Run-Bench {
     if ($PP -ge 131072 -and $Reps -lt 0) { $reps = [math]::Min($reps, 1) }
     if ($PP -ge 65536  -and $TG   -lt 0) { $gen  = [math]::Min($gen, 32) }
 
-    $kvGB    = Get-KVCacheSizeGB $KVType
-    $estVRAM = Get-EstVRAMGB $KVType
-    $eta     = Get-EstRuntime $PP $gen $reps
+    $totalCtx = $PP + $gen
+    $kvGB     = Get-KVCacheSizeGB $totalCtx $KVType
+    $estVRAM  = Get-EstVRAMGB $totalCtx $KVType
+    $eta      = Get-EstRuntime $PP $gen $reps
 
     Write-Host "`n=== $Label ===" -ForegroundColor Cyan
-    Write-Host "    pp=$PP  n=$gen  reps=$reps  ctx=$FIXED_CTX  KV=$KVType ($kvGB GB)  est.VRAM=$estVRAM GB  ETA=$eta" -ForegroundColor DarkGray
+    Write-Host "    pp=$PP  n=$gen  reps=$reps  ctx=$totalCtx  KV=$KVType ($kvGB GB)  est.VRAM=$estVRAM GB  ETA=$eta" -ForegroundColor DarkGray
 
     $pollerJob = Start-VRAMPoller
 
-    # -c $FIXED_CTX ensures KV cache is always pre-allocated for 262144 tokens
+    # b2500 has no -c flag — context = pp + n
     $benchArgs = @(
         "-m", $ModelPath,
         "-r", $reps,
         "-p", $PP,
         "-n", $gen,
-        "-c", $FIXED_CTX,
         "--progress",
         "-o", "md"
     ) + $ExtraArgs
@@ -208,7 +209,7 @@ function Run-Bench {
 
     $metaLines = @()
     if ($null -ne $peakVRAM) { $metaLines += "### **Peak VRAM (measured):** $peakVRAM GB" }
-    $metaLines += "### **Context:** $FIXED_CTX tokens (fixed)  |  **KV ($KVType):** $kvGB GB  |  **Est. VRAM:** $estVRAM GB"
+    $metaLines += "### **Context:** $totalCtx tokens (pp+n)  |  **KV ($KVType):** $kvGB GB  |  **Est. VRAM:** $estVRAM GB"
 
     if ($Ladder) {
         $ppTps = $null
@@ -238,34 +239,36 @@ function Run-Bench {
 
 $sysBaseline = Get-SystemSnapshot
 
-$kvQ4   = Get-KVCacheSizeGB "q4_0"
-$kvQ8   = Get-KVCacheSizeGB "q8_0"
-$kvF16  = Get-KVCacheSizeGB "f16"
-$estQ4  = Get-EstVRAMGB "q4_0"
-$estQ8  = Get-EstVRAMGB "q8_0"
-$estF16 = Get-EstVRAMGB "f16"
+# VRAM at max context — reference for what fits at 262K
+$kvQ4   = Get-KVCacheSizeGB $FIXED_CTX "q4_0"
+$kvQ8   = Get-KVCacheSizeGB $FIXED_CTX "q8_0"
+$kvF16  = Get-KVCacheSizeGB $FIXED_CTX "f16"
+$estQ4  = Get-EstVRAMGB $FIXED_CTX "q4_0"
+$estQ8  = Get-EstVRAMGB $FIXED_CTX "q8_0"
+$estF16 = Get-EstVRAMGB $FIXED_CTX "f16"
 
 $Results  = @()
 $Results += "# Benchmark 262K — $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
 $Results += "- Model: $(Split-Path $ModelPath -Leaf)"
 $Results += "- Config: $Config | Repetitions: $Repetitions (auto-1 for pp≥128K) | NGen: $NGen (auto-32 for pp≥64K)"
-$Results += "- Fixed context: $FIXED_CTX tokens for ALL tests (-c $FIXED_CTX)"
+$Results += "- Target context: $FIXED_CTX tokens | b2500 has no -c flag — context = pp+n per test"
 $Results += "- llama.cpp build: b8407 | ROCm 7.2.1 | HSA_ENABLE_SDMA=0 | Force: $($Force.IsPresent)"
 $Results += "- Hardware: RX 7900 XTX ${VRAM_TOTAL_GB}GB | Ryzen 9 9900X | 128GB DDR5"
 $Results += ""
 $Results += "## System Resources (pre-benchmark)"
 $Results += (Format-SnapshotMD $sysBaseline)
 $Results += ""
-$Results += "## VRAM Budget at ctx=$FIXED_CTX (fixed for all tests)"
+$Results += "## VRAM Budget at ctx=$FIXED_CTX (max context reference)"
 $Results += ""
 $Results += "| KV Type | KV Cache GB | Model GB | **Total Est. GB** | Fits 24GB? |"
 $Results += "|---------|------------:|---------:|------------------:|:----------:|"
-$Results += "| q4_0    | $kvQ4       | $MODEL_VRAM_GB    | **$estQ4**        | ✅ Yes     |"
-$Results += "| q8_0    | $kvQ8       | $MODEL_VRAM_GB    | **$estQ8**        | ❌ OOM     |"
-$Results += "| f16     | $kvF16      | $MODEL_VRAM_GB    | **$estF16**       | ❌ OOM     |"
+$Results += "| q4_0    | $kvQ4       | $MODEL_VRAM_GB | **$estQ4**   | ✅ Yes (~23.3 GB) |"
+$Results += "| q8_0    | $kvQ8       | $MODEL_VRAM_GB | **$estQ8**   | ❌ OOM (~30.3 GB) |"
+$Results += "| f16     | $kvF16      | $MODEL_VRAM_GB | **$estF16**  | ❌ OOM (~44.3 GB) |"
 $Results += ""
 $Results += "> q4_0 is the only viable KV type at 262K context on 24GB VRAM."
-$Results += "> All tests below: -ngl 41 -fa 1 -mmp 0 -ctk q4_0 -ctv q4_0 -c $FIXED_CTX"
+$Results += "> Tests use context = pp + n (b2500 has no -c flag). Stress test: pp=262016 + n=128 = 262144 exactly."
+$Results += "> All tests: -ngl 41 -fa 1 -mmp 0 -ctk q4_0 -ctv q4_0"
 $Results += ""
 
 # =============================================================================
@@ -274,15 +277,16 @@ $Results += ""
 # VRAM stays ~23.25 GB throughout (KV pre-allocated for 262K tokens always)
 # =============================================================================
 if ($Config -eq "ladder" -or $Config -eq "all") {
-    if (-not (Test-VRAMFeasible "ladder" "q4_0")) {
-        Write-Warning "Ladder skipped — q4_0 at ctx=$FIXED_CTX exceeds VRAM guard."
+    # Guard against worst-case ladder step: 262016pp + 32n = 262048 tokens
+    if (-not (Test-VRAMFeasible "ladder" (262016 + 32) "q4_0")) {
+        Write-Warning "Ladder skipped — q4_0 at max step exceeds VRAM guard."
     } else {
         $Results += "---"
-        $Results += "## Section 1: Context Scaling Ladder (q4_0 KV, ctx=$FIXED_CTX fixed)"
+        $Results += "## Section 1: Context Scaling Ladder (q4_0 KV)"
         $Results += ""
         $Results += "> **Goal:** measure pp t/s as prompt size grows 8K → 262K tokens."
-        $Results += "> KV cache pre-allocated for $FIXED_CTX tokens throughout — VRAM ~$estQ4 GB constant."
-        $Results += "> pp auto-reduces n to 32 for pp≥64K; reps to 1 for pp≥128K."
+        $Results += "> Context = pp + n per test (b2500 has no -c flag). VRAM grows with pp."
+        $Results += "> pp≥64K: n auto-reduces to 32. pp≥128K: reps auto-reduces to 1."
         $Results += ""
 
         $ladderSteps = @(
@@ -295,7 +299,7 @@ if ($Config -eq "ladder" -or $Config -eq "all") {
         )
 
         foreach ($step in $ladderSteps) {
-            $r = Run-Bench $step.Label `
+            $r = Invoke-Bench $step.Label `
                  @("-ngl", "41", "-ctk", "q4_0", "-ctv", "q4_0", "-mmp", "0", "-fa", "1") `
                  -PP $step.PP -KVType "q4_0" -Ladder
             $Results += "### $($step.Label)"
@@ -325,11 +329,12 @@ if ($Config -eq "ladder" -or $Config -eq "all") {
 # ubatch controls how prefill is chunked — larger = fewer kernel launches.
 # =============================================================================
 if ($Config -eq "ubatch" -or $Config -eq "all") {
-    if (-not (Test-VRAMFeasible "ubatch" "q4_0")) {
-        Write-Warning "ubatch skipped — q4_0 at ctx=$FIXED_CTX exceeds VRAM guard."
+    # Worst-case ubatch step: 131072pp + 32n = 131104 tokens
+    if (-not (Test-VRAMFeasible "ubatch" (131072 + 32) "q4_0")) {
+        Write-Warning "ubatch skipped — q4_0 at pp=128K exceeds VRAM guard."
     } else {
         $Results += "---"
-        $Results += "## Section 2: ubatch Sweep (q4_0 KV, ctx=$FIXED_CTX fixed)"
+        $Results += "## Section 2: ubatch Sweep (q4_0 KV)"
         $Results += ""
         $Results += "> **Goal:** optimal micro-batch size for prefill at production prompt depths."
         $Results += "> ubatch is the kernel chunk size for prompt processing."
@@ -338,9 +343,9 @@ if ($Config -eq "ubatch" -or $Config -eq "all") {
 
         foreach ($pp in @(8192, 32768, 131072)) {
             $ppLabel = switch ($pp) { 8192 { "8K" } 32768 { "32K" } 131072 { "128K" } default { "${pp}" } }
-            $Results += "### ubatch @ pp=$ppLabel (q4_0 KV, ctx=$FIXED_CTX)"
+            $Results += "### ubatch @ pp=$ppLabel (q4_0 KV)"
             foreach ($ub in @(512, 1024, 2048, 4096)) {
-                $r = Run-Bench "ubatch $ub @ pp=$ppLabel" `
+                $r = Invoke-Bench "ubatch $ub @ pp=$ppLabel" `
                      @("-ngl", "41", "-ctk", "q4_0", "-ctv", "q4_0", "-mmp", "0", "-fa", "1", "-ub", "$ub") `
                      -PP $pp -KVType "q4_0"
                 $Results += "#### ubatch $ub — pp=$ppLabel"
@@ -358,22 +363,27 @@ if ($Config -eq "ubatch" -or $Config -eq "all") {
 # WARNING: ~45-60 min runtime. Est. VRAM: ~23.25 GB.
 # =============================================================================
 if ($Config -eq "stress" -or $Config -eq "all") {
+    $stressPP  = 262016
+    $stressTG  = 128   # pp+n = 262144 exactly (model max)
+    $stressCtx = $stressPP + $stressTG
+    $stressEst = Get-EstVRAMGB $stressCtx "q4_0"
+
     $Results += "---"
-    $Results += "## Section 3: 262K Stress Test (q4_0 KV, ctx=$FIXED_CTX, pp=262016, n=32)"
+    $Results += "## Section 3: 262K Stress Test (q4_0 KV, pp=$stressPP, n=$stressTG)"
     $Results += ""
-    $Results += "> **Goal:** validate full-window inference fits and measure max-context pp throughput."
-    $Results += "> pp=262016 + n=32 = 262048 total tokens — within Qwen3's $FIXED_CTX token max."
-    $Results += "> Est. VRAM: ~$estQ4 GB. Runtime: ~45-60 min. Requires -Force."
+    $Results += "> **Goal:** validate full 262144-token context fits and measure max-context pp throughput."
+    $Results += "> pp=$stressPP + n=$stressTG = $stressCtx tokens — Qwen3 model max ($FIXED_CTX)."
+    $Results += "> Est. VRAM: ~$stressEst GB. Runtime: ~45-60 min. Requires -Force."
     $Results += ""
 
-    if (Test-VRAMFeasible "262K-stress" "q4_0") {
+    if (Test-VRAMFeasible "262K-stress" $stressCtx "q4_0") {
         Write-Host ""
-        Write-Host "WARNING: 262K stress test — est. runtime 45-60 min, est. VRAM $estQ4 GB" -ForegroundColor Yellow
+        Write-Host "WARNING: 262K stress test — est. runtime 45-60 min, est. VRAM $stressEst GB" -ForegroundColor Yellow
         Write-Host "         Press Ctrl+C to abort" -ForegroundColor Yellow
 
-        $r = Run-Bench "262K STRESS (pp=262016, n=32, reps=1)" `
+        $r = Invoke-Bench "262K STRESS (pp=$stressPP, n=$stressTG, reps=1)" `
              @("-ngl", "41", "-ctk", "q4_0", "-ctv", "q4_0", "-mmp", "0", "-fa", "1") `
-             -PP 262016 -TG 32 -Reps 1 -KVType "q4_0" -Ladder
+             -PP $stressPP -TG $stressTG -Reps 1 -KVType "q4_0" -Ladder
 
         $Results += "### Result"
         $Results += $r.Meta
@@ -393,7 +403,7 @@ Write-Host "Results saved to: $OutFile" -ForegroundColor Green
 
 if ($LadderStats.Count -gt 0) {
     Write-Host ""
-    Write-Host "Ladder Summary (ctx=$FIXED_CTX fixed, q4_0 KV):" -ForegroundColor Cyan
+    Write-Host "Ladder Summary (target ctx=$FIXED_CTX, q4_0 KV):" -ForegroundColor Cyan
     Write-Host ("{0,-24} {1,10} {2,8} {3,10} {4,12}" -f "Config", "pp tokens", "KV", "Peak VRAM", "pp t/s")
     Write-Host ("-" * 70)
     foreach ($s in $LadderStats) {
