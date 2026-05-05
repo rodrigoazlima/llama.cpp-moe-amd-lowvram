@@ -2,6 +2,10 @@
 # Benchmark: baseline vs optimized config using llama-bench.exe
 # Measures prompt processing (pp) and token generation (tg) tokens/sec
 
+# Force UTF-8 so llama-bench's ± character doesn't get mangled
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
 param(
     [string]$ModelPath = "D:\opt\models\lmstudio\lmstudio-community\Qwen3-Coder-30B-A3B-Instruct-GGUF\Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
     [string]$Config = "both",   # baseline | optimized | both
