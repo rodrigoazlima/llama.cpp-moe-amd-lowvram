@@ -119,15 +119,35 @@ Prevents OS from paging model weights. Improves stability under memory pressure.
 
 ## 📊 Benchmark Results (RX 7900 XTX, 24GB VRAM)
 
-Model: Qwen3-Coder-30B-A3B Q4_K_M (17.35 GiB) | llama.cpp b8407 | ROCm 7.2.1 | `HSA_ENABLE_SDMA=0`
+Model: Qwen3-Coder-30B-A3B Q4_K_M (17.35 GiB) | llama.cpp b2500 | ROCm 7.2.1 | `HSA_ENABLE_SDMA=0`
 
-| Config | pp t/s | tg t/s | Context | Notes |
-|--------|-------:|-------:|--------:|-------|
-| Baseline (GPU full, f16 KV, mmap, FA) | **1244** | **60.7** | 32K | Best speed |
-| KV-quant only (GPU full, q4_0 KV, no-mmap, FA) | 301 | 32.7 | 128K+ | 4× context headroom |
-| Optimized (MoE CPU offload, q4_0 KV, no-mmap, FA) | 362 | 24.5 | 128K+ | **Low-VRAM only** |
+System: VRAM 24 GB | RAM 128 GB DDR5 | CPU Ryzen 9 9900X
 
-> **Note:** MoE CPU offload hurts on 24GB — model fits entirely in VRAM. Use `launch_baseline.ps1` for speed, `launch_highctx.ps1` for 128K+ context.
+| Config | pp t/s | tg t/s | VRAM est. | Context | Notes |
+|--------|-------:|-------:|----------:|--------:|-------|
+| Baseline (GPU full, f16 KV, mmap, FA) | **1228** | **61.8** | ~17.4 GB | 640 tok | Best speed |
+| KV-quant only (GPU full, q4_0 KV, no-mmap, FA) | **1496** | **60.5** | ~17.4 GB | 640 tok | Fastest pp — no-mmap wins |
+| q8kv (GPU full, q8_0 KV, no-mmap, FA) | **1508** | **63.3** | ~17.4 GB | 640 tok | Near-lossless, 2x ctx vs f16 |
+| highctx (GPU full, q4_0 KV, no-mmap, FA, pp=8K) | — | — | ~17.4 GB | 8K tok | 8K context throughput |
+| largectx (GPU full, f16 KV, no-mmap, FA, pp=8K) | — | — | ~18.3 GB | 8K tok | 8K ctx, full KV quality |
+| maxvram (GPU full, f16 KV, no-mmap, FA, pp=32K) | — | — | ~20.9 GB | 32K tok | Exercises 6.5 GB VRAM headroom |
+| Optimized (MoE CPU offload, q4_0 KV, no-mmap, FA) | 843 | 27.7 | ~17.4 GB | 640 tok | **Low-VRAM only** |
+
+> **Note:** `no-mmap` + `q4_0/q8_0` KV consistently outperforms mmap baseline — skip mmap on 24GB.
+> MoE CPU offload hurts on 24GB. Use `launch_baseline.ps1` for speed, `launch_highctx.ps1` for 128K+ context.
+> `—` rows = new configs, run `.\win\scripts\benchmark.ps1 -Config largectx` or `-Config maxvram` to populate.
+
+### Benchmark Configs
+
+```powershell
+.\win\scripts\benchmark.ps1                        # baseline + optimized (default)
+.\win\scripts\benchmark.ps1 -Config highctx        # 8K context, q4_0 KV
+.\win\scripts\benchmark.ps1 -Config largectx       # 8K context, f16 KV (~18.3 GB VRAM)
+.\win\scripts\benchmark.ps1 -Config maxvram        # 32K context, f16 KV (~21 GB VRAM)
+.\win\scripts\benchmark.ps1 -Config all            # all configs (takes ~30 min)
+```
+
+Reports include: peak VRAM (measured via PDH counters), KV cache size estimate, RAM/CPU pre-benchmark snapshot.
 
 ## 💻 Hardware (Tested)
 
