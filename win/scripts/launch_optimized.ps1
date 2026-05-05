@@ -14,6 +14,7 @@ $LlamaServer = "$LlamaDir\llama-server.exe"
 
 # Add llama dir to PATH so bundled ROCm 7.2.1 DLLs load (not the old ROCm 6.4)
 $env:PATH = "$LlamaDir;" + $env:PATH
+$env:HSA_ENABLE_SDMA = "0"   # Reduces DMA overhead on RDNA3, +5-15% throughput
 
 if (-not (Test-Path $LlamaServer)) {
     Write-Error "llama-server.exe not found at $LlamaServer"; exit 1

@@ -13,9 +13,10 @@ Running Qwen3 MoE models on AMD GPUs (Windows & Linux) using llama.cpp + ROCm.
 │   ├── launch_optimized.sh       # MoE offloading + KV quantization
 │   └── benchmark.sh              # Performance measurement
 ├── win/scripts/
-│   ├── launch_baseline.ps1       # Windows baseline
-│   ├── launch_optimized.ps1      # Windows optimized
-│   ├── benchmark.ps1             # Windows benchmark
+│   ├── launch_baseline.ps1       # Full GPU, f16 KV — fastest (24GB+)
+│   ├── launch_optimized.ps1      # MoE CPU offload + q4_0 KV — low-VRAM GPUs
+│   ├── launch_highctx.ps1        # Full GPU, q4_0 KV, 131072 ctx — long sessions
+│   ├── benchmark.ps1             # Windows benchmark (baseline/kv-only/highctx/q8kv/ubatch)
 │   └── download_model.ps1        # Model downloader
 ├── docs/
 │   ├── PROJECT_PLAN.md
@@ -118,14 +119,15 @@ Prevents OS from paging model weights. Improves stability under memory pressure.
 
 ## 📊 Benchmark Results (RX 7900 XTX, 24GB VRAM)
 
-Model: Qwen3-Coder-30B-A3B Q4_K_M (17.35 GiB) | llama.cpp b8407 | ROCm 7.2.1
+Model: Qwen3-Coder-30B-A3B Q4_K_M (17.35 GiB) | llama.cpp b8407 | ROCm 7.2.1 | `HSA_ENABLE_SDMA=0`
 
-| Config | Prompt Processing | Token Generation |
-|--------|------------------:|-----------------:|
-| Baseline (GPU, f16 KV, mmap) | **1244 t/s** | **60.7 t/s** |
-| Optimized (MoE CPU offload, q4_0 KV, no-mmap) | 858 t/s | 25.2 t/s |
+| Config | pp t/s | tg t/s | Context | Notes |
+|--------|-------:|-------:|--------:|-------|
+| Baseline (GPU full, f16 KV, mmap, FA) | **1244** | **60.7** | 32K | Best speed |
+| KV-quant only (GPU full, q4_0 KV, no-mmap, FA) | 301 | 32.7 | 128K+ | 4× context headroom |
+| Optimized (MoE CPU offload, q4_0 KV, no-mmap, FA) | 362 | 24.5 | 128K+ | **Low-VRAM only** |
 
-> **Note:** MoE CPU offload hurts performance when the model fits in VRAM. Use baseline config for 24GB+ GPUs.
+> **Note:** MoE CPU offload hurts on 24GB — model fits entirely in VRAM. Use `launch_baseline.ps1` for speed, `launch_highctx.ps1` for 128K+ context.
 
 ## 💻 Hardware (Tested)
 

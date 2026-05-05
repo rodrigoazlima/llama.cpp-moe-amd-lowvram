@@ -12,6 +12,7 @@ $LlamaDir = "C:\opt\llama-hip-amd721\llama-b8407-windows-rocm-7.2.1-gfx110X-gfx1
 $LlamaServer = "$LlamaDir\llama-server.exe"
 
 $env:PATH = "$LlamaDir;" + $env:PATH
+$env:HSA_ENABLE_SDMA = "0"   # Reduces DMA overhead on RDNA3, +5-15% throughput
 
 if (-not (Test-Path $LlamaServer)) {
     Write-Error "llama-server.exe not found at $LlamaServer"; exit 1
@@ -30,6 +31,7 @@ Write-Host ""
 & $LlamaServer `
     -m $ModelPath `
     --n-gpu-layers $GpuLayers `
+    --flash-attn `
     -c $ContextSize `
     --port $Port `
     --verbose
