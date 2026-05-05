@@ -1,191 +1,172 @@
-# Qwen 3.6 35B-A3B Optimization Project 🚀
+# Qwen3 30B-A3B on AMD GPU — llama.cpp + ROCm
 
-Production-ready system for running Qwen 3.6 35B-A3B (Mixture of Experts) on low-VRAM AMD GPUs using llama.cpp + ROCm
+Running Qwen3 MoE models on AMD GPUs (Windows & Linux) using llama.cpp + ROCm.
 
 ## 📋 Project Structure
 
 ```
 .
-├── Dockerfile                    # ROCm-enabled container
-├── setup_installation.sh         # One-command installer
-├── scripts/
+├── Dockerfile                    # ROCm-enabled container (Linux)
+├── setup_installation.sh         # Linux one-command installer
+├── unix/scripts/
 │   ├── launch_baseline.sh        # Standard configuration
-│   ├── launch_optimized.sh       # MoE offloading + TurboQuant
-│   ├── benchmark.sh              # Performance measurement
-│   └── run_experiment.sh         # Main experiment runner
+│   ├── launch_optimized.sh       # MoE offloading + KV quantization
+│   └── benchmark.sh              # Performance measurement
+├── win/scripts/
+│   ├── launch_baseline.ps1       # Windows baseline
+│   ├── launch_optimized.ps1      # Windows optimized
+│   ├── benchmark.ps1             # Windows benchmark
+│   └── download_model.ps1        # Model downloader
 ├── docs/
-│   ├── PROJECT_PLAN.md           # Complete implementation guide
-│   ├── Running a 35B AI Model on 6GB VRAM, FAST.md
-│   └── windows/                  # Windows-specific notes
+│   ├── PROJECT_PLAN.md
+│   └── Running a 35B AI Model on 6GB VRAM, FAST.md
 └── models/                       # Model storage (create manually)
 ```
 
-## 🔧 Quick Start
+## 🔧 Quick Start (Windows)
 
-### 1. Install Dependencies (One Command)
+### 1. Download llama.cpp (ROCm 7.2.1, pre-built)
+
+```powershell
+Invoke-WebRequest -Uri "https://repo.radeon.com/rocm/llama.cpp/windows/rocm-rel-7.2.1/llama-b8407-windows-rocm-7.2.1-gfx110X-gfx115X-gfx120X-x64.zip" `
+    -OutFile "C:\opt\llama-hip\llama-b8407-rocm721.zip"
+Expand-Archive "C:\opt\llama-hip\llama-b8407-rocm721.zip" -DestinationPath "C:\opt\llama-hip-amd721\"
+```
+
+> ROCm 7.2.1 runtime DLLs are bundled — no separate ROCm install needed.
+
+### 2. Download Model
+
+```powershell
+# Requires: pip install huggingface-hub
+$env:PYTHONIOENCODING = "utf-8"
+huggingface-cli download unsloth/Qwen3.6-35B-A3B-GGUF Qwen3.6-35B-A3B-UD-Q4_K_M.gguf `
+    --local-dir "D:\opt\models"
+```
+
+Or use the helper script:
+```powershell
+.\win\scripts\download_model.ps1 -Quant UD-Q4_K_M
+```
+
+### 3. Launch Server
+
+```powershell
+.\win\scripts\launch_baseline.ps1
+```
+
+### 4. Test Inference
+
+**PowerShell:**
+```powershell
+$body = @{
+    model    = "qwen"
+    messages = @(@{ role = "user"; content = "Hello, what can you do?" })
+} | ConvertTo-Json
+
+Invoke-RestMethod -Uri "http://127.0.0.1:8081/v1/chat/completions" `
+    -Method POST -ContentType "application/json" -Body $body |
+    Select-Object -ExpandProperty choices | ForEach-Object { $_.message.content }
+```
+
+**curl:**
+```bash
+curl http://127.0.0.1:8081/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen","messages":[{"role":"user","content":"Hello, what can you do?"}]}'
+```
+
+**Streaming (curl):**
+```bash
+curl http://127.0.0.1:8081/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen","messages":[{"role":"user","content":"Write a haiku"}],"stream":true}'
+```
+
+### 5. Run Benchmarks
+
+```powershell
+.\win\scripts\benchmark.ps1
+```
+
+## 🔧 Quick Start (Linux)
+
+### 1. Install Dependencies
 ```bash
 chmod +x setup_installation.sh
 ./setup_installation.sh
 ```
 
-### 2. Build Docker Container
+### 2. Run Server
 ```bash
-docker build -t llamacpp-moe-amd .
+./unix/scripts/launch_baseline.sh /path/to/model.gguf
 ```
 
-### 3. Run Baseline Configuration
-```bash
-./scripts/launch_baseline.sh /path/to/qwen3.6-35b-a3b-Q8_0.gguf
-```
+## ⚡ Optimization Flags
 
-### 4. Run Optimized Configuration (5× Faster)
-```bash
-./scripts/launch_optimized.sh /path/to/qwen3.6-35b-a3b-Q8_0.gguf
-```
+### MoE Expert Offloading (`--n-cpu-moe N`)
+Offloads expert weights of first N layers to CPU RAM. **Only beneficial when model doesn't fit in VRAM.** If model fits in VRAM, skip this flag — it adds PCIe overhead.
 
-### 5. Benchmark Performance
-```bash
-./scripts/benchmark.sh /path/to/qwen3.6-35b-a3b-Q8_0.gguf optimized
-```
+### KV Cache Quantization (`--cache-type-k q4_0 --cache-type-v q4_0`)
+Reduces KV cache memory 4×. Allows longer context with less VRAM.
 
-## ⚡ Key Optimizations Implemented
+### No Memory Mapping (`--no-mmap`)
+Loads entire model into RAM upfront. Reduces latency after load but increases startup time and RAM usage.
 
-### MoE Expert Offloading
-- **Flag**: `--n-cpu-moe 35`
-- **Effect**: Offloads expert blocks to CPU RAM while keeping fast-firing parts on GPU
-- **Result**: 230% speed boost (10 → 23 tokens/second)
+### Memory Locking (`--mlock`)
+Prevents OS from paging model weights. Improves stability under memory pressure.
 
-### TurboQuant KV Cache
-- **Flag**: `--turbo-quant 4` (4-bit keys) + `--turbo-quant 3` (3-bit values)
-- **Effect**: Nearly lossless quality (equivalent to Q8)
-- **Result**: 4× context without quality degradation
+## 📊 Benchmark Results (RX 7900 XTX, 24GB VRAM)
 
-### Memory Optimization
-- **Flag**: `--no-mmap`
-- **Effect**: Loads entire model into RAM upfront
-- **Result**: 35% faster (eliminates disk reads during inference)
+Model: Qwen3-Coder-30B-A3B Q4_K_M (17.35 GiB) | llama.cpp b8407 | ROCm 7.2.1
 
-- **Flag**: `--mlock`
-- **Effect**: Prevents kernel from paging out experts
-- **Result**: Production-ready stability
+| Config | Prompt Processing | Token Generation |
+|--------|------------------:|-----------------:|
+| Baseline (GPU, f16 KV, mmap) | **1244 t/s** | **60.7 t/s** |
+| Optimized (MoE CPU offload, q4_0 KV, no-mmap) | 858 t/s | 25.2 t/s |
 
-## 📊 Expected Performance
+> **Note:** MoE CPU offload hurts performance when the model fits in VRAM. Use baseline config for 24GB+ GPUs.
 
-| Configuration | Tokens/Second | Context Length | VRAM Usage |
-|---------------|---------------|----------------|------------|
-| Baseline      | ~10 tokens/s  | 8,192 tokens   | ~16GB      |
-| Optimized     | ~50 tokens/s  | 256,000 tokens | ~20GB      |
+## 💻 Hardware (Tested)
 
-## 💻 Hardware Requirements
-
-### Minimum (Tested)
 - **GPU**: AMD Radeon RX 7900 XTX (24GB VRAM)
 - **CPU**: AMD Ryzen 9 9900X (12 cores)
 - **RAM**: 128GB DDR5
-- **OS**: Ubuntu Server 22.04 LTS
-
-### Recommended
-- Any GPU from this decade (better than GTX 1060)
-- Faster RAM (DDR4/DDR5)
-- PCIe Gen 4 for better bandwidth
-- Results scale with better hardware
-
-## 🐳 Docker Usage
-
-### Build Container
-```bash
-docker build -t llamacpp-moe-amd .
-```
-
-### Run Container
-```bash
-docker run -d \
-  --name llama-server \
-  --gpus all \
-  --ipc=host \
-  -v /path/to/models:/models \
-  -p 8080:8080 \
-  llamacpp-moe-amd \
-  /scripts/launch_optimized.sh /models/qwen3.6-35b-a3b-Q8_0.gguf
-```
-
-### Important Docker Flags
-- `--gpus all`: Enable GPU passthrough
-- `--ipc=host`: Required for memory locking
-- `-v /path/to/models:/models`: Mount model directory
+- **OS**: Windows 11 Pro + ROCm 7.2.1 (bundled DLLs)
 
 ## 📚 Documentation
 
-### Complete Implementation Guide
-- **File**: `docs/PROJECT_PLAN.md`
-- **Contents**:
-  - Atomic step-by-step execution plan
-  - Detailed configuration instructions
-  - Troubleshooting guide
-  - Hardware optimization tips
-
-### Optimization Details
-- **File**: `docs/Running a 35B AI Model on 6GB VRAM, FAST.md`
-- **Contents**:
-  - Performance breakdown
-  - What didn't work (speculative decoding)
-  - Future optimization paths
-  - Practical use cases
-
-### Windows Support
-- **Directory**: `docs/windows/`
-- **Contents**:
-  - ROCm on Windows notes
-  - Alternative installation methods
-  - Known limitations
+- `docs/PROJECT_PLAN.md` — Step-by-step execution plan
+- `win/docs/windows-setup.md` — Windows ROCm & llama.cpp download links
 
 ## 🧪 Testing & Validation
 
-### Run Full Experiment
-```bash
-./scripts/run_experiment.sh /path/to/model.gguf
+### Check GPU detection
+```powershell
+# Windows
+$LlamaDir = "C:\opt\llama-hip-amd721\llama-b8407-windows-rocm-7.2.1-gfx110X-gfx115X-gfx120X-x64"
+$env:PATH = "$LlamaDir;" + $env:PATH
+& "$LlamaDir\llama-server.exe" --list-devices
 ```
 
-### Verify Installation
 ```bash
-./setup_installation.sh --verify
-```
-
-### Check ROCm Status
-```bash
+# Linux
 rocm-smi
 ```
 
 ## 🎯 Success Criteria
 
-✅ Model loads successfully
-✅ Optimized flags applied correctly
-✅ Performance matches expected metrics
-✅ System stable over long generations
-✅ Documentation complete and accurate
-✅ Docker container functional
+✅ GPU detected by llama.cpp
+✅ Model loads and server starts
+✅ API responds to chat completions
+✅ Benchmark results captured
 
 ## 📝 License
 
-This project is based on the video "Running a 35B AI Model on 6GB VRAM, FAST (llama.cpp Guide)" by Codacus. The llama.cpp project is licensed under the MIT License.
-
-## 🤝 Contributing
-
-Found an optimization we missed? Tested on different hardware? Open an issue or PR!
-
-- Share your benchmark results
-- Report stability issues
-- Suggest additional flags or techniques
-
-## 📞 Support
-
-For issues or questions:
-1. Check the documentation in `docs/PROJECT_PLAN.md`
-2. Review troubleshooting section
-3. Open an issue on GitHub
+llama.cpp is licensed under the MIT License.
 
 ---
 
 **Last Updated**: May 2026
-**Compatible with**: llama.cpp TurboQuant fork
-**Tested on**: Qwen v3.6
+**llama.cpp build**: b8407 (ROCm 7.2.1)
+**Tested on**: Qwen3-Coder-30B-A3B, Qwen3.6-35B-A3B
