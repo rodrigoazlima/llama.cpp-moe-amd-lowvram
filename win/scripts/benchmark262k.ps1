@@ -32,7 +32,9 @@ param(
     [string]$Config     = "ladder",  # ladder | ubatch | stress | all
     [int]$Repetitions   = 2,         # auto-reduced to 1 for pp >= 128K
     [int]$NGen          = 128,       # auto-reduced to 32 for pp >= 64K
-    [switch]$Force                   # bypass VRAM guard (>23.0 GB est.)
+    [switch]$Force,                  # bypass VRAM guard (>23.0 GB est.)
+    [string[]]$SkipPromptSizes,      # array of prompt sizes to skip (e.g., "262016", "131072")
+    [string[]]$SkipContextSizes      # array of context sizes to skip (e.g., "131072", "65536")
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -303,6 +305,11 @@ if ($Config -eq "ladder" -or $Config -eq "all") {
         )
 
         foreach ($step in $ladderSteps) {
+            if ($SkipPromptSizes -contains "$($step.PP)") {
+                Write-Host "Skipping $($step.Label) (pp=$($step.PP)) due to -SkipPromptSizes parameter" -ForegroundColor Yellow
+                continue
+            }
+
             $r = Invoke-Bench $step.Label `
                  @("-ngl", "41", "-ctk", "q4_0", "-ctv", "q4_0", "-mmp", "0", "-fa", "1") `
                  -PP $step.PP -KVType "q4_0" -Ladder
@@ -346,6 +353,10 @@ if ($Config -eq "ubatch" -or $Config -eq "all") {
         $Results += ""
 
         foreach ($pp in @(8192, 32768, 131072)) {
+            if ($SkipPromptSizes -contains "$pp") {
+                Write-Host "Skipping ubatch at pp=$pp due to -SkipPromptSizes parameter" -ForegroundColor Yellow
+                continue
+            }
             $ppLabel = switch ($pp) { 8192 { "8K" } 32768 { "32K" } 131072 { "128K" } default { "${pp}" } }
             $Results += "### ubatch @ pp=$ppLabel (q4_0 KV)"
             foreach ($ub in @(512, 1024, 2048, 4096)) {
@@ -381,17 +392,21 @@ if ($Config -eq "stress" -or $Config -eq "all") {
     $Results += ""
 
     if (Test-VRAMFeasible "262K-stress" $stressCtx "q4_0") {
-        Write-Host ""
-        Write-Host "WARNING: 262K stress test — est. runtime 45-60 min, est. VRAM $stressEst GB" -ForegroundColor Yellow
-        Write-Host "         Press Ctrl+C to abort" -ForegroundColor Yellow
+        if ($SkipPromptSizes -contains "$stressPP") {
+            Write-Host "Skipping stress test (pp=$stressPP) due to -SkipPromptSizes parameter" -ForegroundColor Yellow
+        } else {
+            Write-Host ""
+            Write-Host "WARNING: 262K stress test — est. runtime 45-60 min, est. VRAM $stressEst GB" -ForegroundColor Yellow
+            Write-Host "         Press Ctrl+C to abort" -ForegroundColor Yellow
 
-        $r = Invoke-Bench "262K STRESS (pp=$stressPP, n=$stressTG, reps=1)" `
-             @("-ngl", "41", "-ctk", "q4_0", "-ctv", "q4_0", "-mmp", "0", "-fa", "1") `
-             -PP $stressPP -TG $stressTG -Reps 1 -KVType "q4_0" -Ladder
+            $r = Invoke-Bench "262K STRESS (pp=$stressPP, n=$stressTG, reps=1)" `
+                 @("-ngl", "41", "-ctk", "q4_0", "-ctv", "q4_0", "-mmp", "0", "-fa", "1") `
+                 -PP $stressPP -TG $stressTG -Reps 1 -KVType "q4_0" -Ladder
 
-        $Results += "### Result"
-        $Results += $r.Meta
-        $Results += ($r.Out | Out-String)
+            $Results += "### Result"
+            $Results += $r.Meta
+            $Results += ($r.Out | Out-String)
+        }
     }
 
     $Results += "> **If OOM:** retry with `-ncmoe 5` to offload 5 MoE layers to CPU (~1-2 GB less VRAM, ~5% slower pp)."

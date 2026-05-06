@@ -1,5 +1,7 @@
 # Qwen3 30B-A3B on AMD GPU — llama.cpp + ROCm
 
+> **About:** Run Qwen3 MoE models on AMD GPUs via llama.cpp + ROCm (Windows/Linux). Includes scripts, benchmarks, and optimizations for low-VRAM setups.
+
 Running Qwen3 MoE models on AMD GPUs (Windows & Linux) using llama.cpp + ROCm.
 
 ## 📋 Project Structure
@@ -88,6 +90,22 @@ curl http://127.0.0.1:8081/v1/chat/completions \
 
 ```powershell
 .\win\scripts\benchmark.ps1
+```
+
+### 6. Run 262K Context Benchmarks
+
+```powershell
+.\win\scripts\benchmark262k.ps1                        # ladder (default, ~30 min)
+.\win\scripts\benchmark262k.ps1 -Config ubatch        # ubatch sweep (~45 min)
+.\win\scripts\benchmark262k.ps1 -Config stress -Force # 262K full-context run (~45 min)
+.\win\scripts\benchmark262k.ps1 -Config all -Force    # everything (~2.5+ hr)
+```
+
+You can also skip specific prompt sizes or context sizes:
+
+```powershell
+.\win\scripts\benchmark262k.ps1 -SkipPromptSizes "262016", "131072"  # Skip 262K and 128K prompt sizes
+.\win\scripts\benchmark262k.ps1 -SkipContextSizes "131072", "65536"   # Skip specific context sizes
 ```
 
 ## 🔧 Quick Start (Linux)
