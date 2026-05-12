@@ -31,7 +31,6 @@ Write-Host ""
 & $LlamaServer `
     -m $ModelPath `
     --n-gpu-layers $GpuLayers `
-    --flash-attn `
     -c $ContextSize `
     --port $Port `
     --verbose
