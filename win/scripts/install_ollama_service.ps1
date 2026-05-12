@@ -1,19 +1,50 @@
 #Requires -Version 5.1
-#Requires -RunAsAdministrator
 # Install and register Ollama as a Windows service via NSSM
+# Admin required only for service registration — detection and install run as user.
 
 param(
-    [string]$OllamaExe    = "C:\Program Files\Ollama\ollama.exe",
+    [string]$OllamaExe    = "",   # auto-detected if empty
     [string]$ServiceName  = "Ollama",
     [string]$DisplayName  = "Ollama LLM Service",
     [string]$NssmPath     = "C:\tools\nssm\nssm.exe",
     [string]$LogDir        = "C:\ProgramData\Ollama\logs",
     [string]$OllamaHost   = "0.0.0.0",
     [int]$OllamaPort      = 11434,
+    [string]$OllamaModels = "D:\opt\ollama-models",
     [switch]$Uninstall
 )
 
 # --- helpers -----------------------------------------------------------------
+
+function Find-Ollama {
+    # 1. explicit param
+    if ($OllamaExe -and (Test-Path $OllamaExe)) { return $OllamaExe }
+    # 2. PATH
+    $inPath = Get-Command ollama -ErrorAction SilentlyContinue
+    if ($inPath) { return $inPath.Source }
+    # 3. common install locations
+    $candidates = @(
+        "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe",
+        "C:\Program Files\Ollama\ollama.exe",
+        "C:\Program Files (x86)\Ollama\ollama.exe"
+    )
+    foreach ($c in $candidates) { if (Test-Path $c) { return $c } }
+    return $null
+}
+
+function Ensure-Ollama {
+    $found = Find-Ollama
+    if ($found) { return $found }
+    Write-Host "Ollama not found — downloading installer..."
+    $installer = "$env:TEMP\OllamaSetup.exe"
+    Invoke-WebRequest "https://ollama.com/download/OllamaSetup.exe" -OutFile $installer
+    Write-Host "Running OllamaSetup.exe (silent)..."
+    Start-Process $installer -ArgumentList "/S" -Wait
+    $found = Find-Ollama
+    if (-not $found) { Write-Error "Ollama install failed. Install manually: https://ollama.com/download"; exit 1 }
+    Write-Host "Ollama installed: $found"
+    return $found
+}
 
 function Ensure-Nssm {
     if (Test-Path $NssmPath) { return }
@@ -50,8 +81,13 @@ if ($Uninstall) {
 
 # --- preflight ---------------------------------------------------------------
 
-if (-not (Test-Path $OllamaExe)) {
-    Write-Error "ollama.exe not found: $OllamaExe`nInstall from https://ollama.com/download"
+$OllamaExe = Ensure-Ollama
+Write-Host "Ollama: $OllamaExe"
+
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    Write-Error "Service registration requires admin. Re-run as Administrator (or: Start-Process pwsh -Verb RunAs)."
     exit 1
 }
 
@@ -77,7 +113,7 @@ if (Service-Exists $ServiceName) {
 & $NssmPath set $ServiceName AppRotateFiles 1
 & $NssmPath set $ServiceName AppRotateOnline 1
 & $NssmPath set $ServiceName AppRotateSeconds 86400
-& $NssmPath set $ServiceName AppEnvironmentExtra "OLLAMA_HOST=${OllamaHost}:${OllamaPort}"
+& $NssmPath set $ServiceName AppEnvironmentExtra "OLLAMA_HOST=${OllamaHost}:${OllamaPort}" "OLLAMA_MODELS=${OllamaModels}"
 
 # --- start -------------------------------------------------------------------
 
