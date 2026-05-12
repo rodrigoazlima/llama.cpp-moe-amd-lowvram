@@ -55,7 +55,7 @@ Or use the helper script:
 ### 3. Launch Server
 
 ```powershell
-.\win\scripts\launch_baseline.ps1
+.\win\scripts\launch_optimized.ps1
 ```
 
 ### 4. Test Inference
