@@ -10,7 +10,7 @@ param(
     [string]$LogDir        = "C:\ProgramData\Ollama\logs",
     [string]$OllamaHost   = "0.0.0.0",
     [int]$OllamaPort      = 11434,
-    [string]$OllamaModels = "D:\opt\ollama-models",
+    [string]$OllamaModels = "D:\opt\models\ollama",
     [switch]$Uninstall
 )
 
@@ -94,6 +94,12 @@ if (-not $isAdmin) {
 Ensure-Nssm
 
 New-Item -ItemType Directory -Force $LogDir | Out-Null
+New-Item -ItemType Directory -Force $OllamaModels | Out-Null
+
+# Persist OLLAMA_MODELS as system env var so both service and CLI always agree
+[System.Environment]::SetEnvironmentVariable("OLLAMA_MODELS", $OllamaModels, "Machine")
+$env:OLLAMA_MODELS = $OllamaModels
+Write-Host "OLLAMA_MODELS set (Machine): $OllamaModels"
 
 # --- install / update service ------------------------------------------------
 
@@ -113,16 +119,52 @@ if (Service-Exists $ServiceName) {
 & $NssmPath set $ServiceName AppRotateFiles 1
 & $NssmPath set $ServiceName AppRotateOnline 1
 & $NssmPath set $ServiceName AppRotateSeconds 86400
-& $NssmPath set $ServiceName AppEnvironmentExtra "OLLAMA_HOST=${OllamaHost}:${OllamaPort}" "OLLAMA_MODELS=${OllamaModels}"
+# NSSM requires all env vars in a single AppEnvironmentExtra call
+& $NssmPath set $ServiceName AppEnvironmentExtra `
+    "OLLAMA_HOST=${OllamaHost}:${OllamaPort}" `
+    "OLLAMA_MODELS=${OllamaModels}"
 
 # --- start -------------------------------------------------------------------
 
 Start-Service -Name $ServiceName
+Start-Sleep -Seconds 4
+
 $svc = Get-Service -Name $ServiceName
 Write-Host ""
 Write-Host "Service : $ServiceName"
 Write-Host "Status  : $($svc.Status)"
 Write-Host "Endpoint: http://${OllamaHost}:${OllamaPort}"
+Write-Host "Models  : $OllamaModels"
 Write-Host "Logs    : $LogDir"
 Write-Host ""
-Write-Host "Test: Invoke-RestMethod http://localhost:${OllamaPort}/api/tags"
+
+# --- validate (wait up to 30s for API) ---------------------------------------
+
+Write-Host "Waiting for API..."
+$deadline = (Get-Date).AddSeconds(30)
+$up = $false
+while ((Get-Date) -lt $deadline) {
+    try {
+        $tags = Invoke-RestMethod "http://localhost:${OllamaPort}/api/tags" -ErrorAction Stop
+        $up = $true
+        break
+    } catch {
+        Start-Sleep -Seconds 2
+        Write-Host -NoNewline "."
+    }
+}
+Write-Host ""
+
+if (-not $up) {
+    Write-Warning "API did not respond within 30s. Check logs: $LogDir\ollama-err.log"
+    exit 1
+}
+
+Write-Host "API OK"
+$count = ($tags.models | Measure-Object).Count
+Write-Host "Models loaded: $count"
+if ($tags.models) {
+    $tags.models | ForEach-Object { Write-Host "  $($_.name)  [$([math]::Round($_.size/1GB,2)) GB]" }
+} else {
+    Write-Host "  (none — run .\win\scripts\ollama_import_model.ps1 to add model)"
+}
